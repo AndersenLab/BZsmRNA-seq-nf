@@ -11,72 +11,78 @@ fq_set = Channel.fromPath(data_location + "**/*.fastq.gz")
                 .map { n -> [ n.getName(), n ] }
 
 
-project="PRJNA13758"
 reference="WS255"
-prefix="ftp://ftp.wormbase.org/pub/wormbase/releases/${reference}/species/c_elegans/${project}/"
-
+N2_project="PRJNA13758"
+N2_prefix="ftp://ftp.wormbase.org/pub/wormbase/releases/${reference}/species/c_elegans/${N2_project}/"
+CB_project="PRJNA275000"
+CB_prefix="ftp://ftp.wormbase.org/pub/wormbase/releases/${reference}/species/c_elegans/${CB_project}/"
 
 process fetch_reference {
 
     publishDir "output/", mode: 'copy', pattern: 'meta.pipeline.txt'
     
     output:
-        file("geneset.gtf.gz") into geneset_gtf
-
-        file("reference.fa.gz") into reference_hisat
+        file("N2_geneset.gtf.gz") into N2_geneset_gtf
+        file("N2_reference.fa.gz") into N2_reference
+        file("N2_annotations.gff3.gz") into N2_annotations
+        file("CB_reference.fa.gz") into CB_reference
         file("meta.pipeline.txt")
 
     """
-        echo '${project}' > meta.pipeline.txt
+        echo '${N2_project}' > meta.pipeline.txt
+        echo '${CB_project}' >> meta.pipeline.txt
         echo '${reference}' >> meta.pipeline.txt
-        # Download gene set
-        curl ${prefix}/c_elegans.${project}.${reference}.canonical_geneset.gtf.gz > geneset.gtf.gz
+        # Download N2 gene set
+        curl ${N2_prefix}/c_elegans.${N2_project}.${reference}.canonical_geneset.gtf.gz > N2_geneset.gtf.gz
 
-        # Download reference genome
-        curl ${prefix}/c_elegans.${project}.${reference}.genomic.fa.gz > reference.fa.gz
+        #Download N2 reference genome
+        curl ${N2_prefix}/c_elegans.${N2_project}.${reference}.genomic.fa.gz > N2_reference.fa.gz
+
+        #Download N2 gff file
+        curl ${N2_prefix}/c_elegans.${N2_project}.${reference}.annotations.gff3.gz > N2_annotations.gff3.gz
+
+        #Download CB4856 reference genome
+        curl ${CB_prefix}/c_elegans.${CB_project}.${reference}.genomic.fa.gz > CB_reference.fa.gz
+        
     """
 }
-geneset_gtf.into { geneset_hisat; geneset_stringtie }
+//geneset_gtf.into { geneset_hisat; geneset_stringtie }
 
 
-extract_exons_py = file("scripts/hisat2_extract_exons.py")
-extract_splice_py = file("scripts/hisat2_extract_splice_sites.py")
-
-process hisat2_indexing {
-
-    input:
-        file("geneset.gtf.gz") from geneset_hisat
-        file("reference.fa.gz") from reference_hisat
-
-    output:
-        file("splice.ss") into splice_hisat
-        file("exon.exon") into exon_hisat
-        file("reference.fa.gz") into reference_build_hisat
-
-    """
-        gzcat geneset.gtf.gz | python ${extract_splice_py} - > splice.ss
-        gzcat geneset.gtf.gz | python ${extract_exons_py} - > exon.exon
-    """
-
-}
-
-process build_hisat_index {
+process bwa_index_N2 {
 
     cpus small_core
 
+    tag { name }
+
     input:
-        file("splice.ss") from splice_hisat
-        file("exon.exon") from exon_hisat
-        file("reference.fa.gz") from reference_build_hisat
+        file("N2_reference.fa.gz") from N2_reference
 
     output:
-        file "*.ht2" into hs2_indices
+       file "N2_reference.*" into N2_bwaindex
 
     """
-        zcat reference.fa.gz > reference.fa
-        hisat2-build -p ${small_core} --ss splice.ss --exon exon.exon reference.fa reference.hisat2_index
+        gzcat N2_reference.fa.gz > N2_reference.fa
+        bwa index N2_reference.fa   
     """
+}
 
+process bwa_index_CB {
+
+    cpus small_core
+
+    tag { name }
+
+    input:
+        file("CB_reference.fa.gz") from CB_reference
+
+    output:
+       file "CB_reference.*" into CB_bwaindex
+
+    """ 
+        gzcat CB_reference.fa.gz > CB_reference.fa
+        bwa index CB_reference.fa
+    """
 }
 
 process trimmomatic {
@@ -99,118 +105,80 @@ process trimmomatic {
     """
 }
 
-
 process align {
 
-    cpus small_core
+    cpus large_core
 
-    tag { prefix }
+    tag { reads }
 
     input:
         file reads from trimmed_reads
-        file hs2_indices from hs2_indices.first()
+        file CB_bwaindex from CB_bwaindex.first()
+        file N2_bwaindex from N2_bwaindex.first()
 
     output:
-        set val(sample_id), file("${prefix}.bam"), file("${prefix}.bam.bai") into hisat2_bams
-        file "${prefix}.hisat2_log.txt" into alignment_logs
+        set val(sample_id), val(phosphate_id), file("${fa_prefix}.bam"), file("${fa_prefix}.bam.bai") into bwa_bams
 
     script:
-        index_base = hs2_indices[0].toString() - ~/.\d.ht2/
-        prefix = reads[0].toString() - ~/(_trim)(\.fq\.gz)$/
-        m = prefix =~ /\w+-([^_]+)_.*/
+        m = reads =~ /\w+-([^_P]{2}).(P{0,1})_.*/
         sample_id = m[0][1]
+        phosphate_id = m[0][2]
+        fa_prefix = reads[0].toString() - ~/(_trim)(\.fq\.gz)$/
 
-    """
-        hisat2 -p ${small_core} -x $index_base -U ${reads} -S ${prefix}.sam --rg-id "${prefix}" --rg "SM:${sample_id}" --rg "LB:${sample_id}" --rg "PL:ILLUMINA" 2> ${prefix}.hisat2_log.txt
-        samtools view -bS ${prefix}.sam > ${prefix}.unsorted.bam
-        samtools flagstat ${prefix}.unsorted.bam
-        samtools sort -@ ${small_core} -o ${prefix}.bam ${prefix}.unsorted.bam
-        samtools index -b ${prefix}.bam
-    """
+        println sample_id
+        println phosphate_id
+
+        if (phosphate_id == "P")
+            """
+            bwa aln -o 0 -n 0 -t ${large_core} N2_reference.fa ${reads} > ${fa_prefix}.sai
+            bwa samse N2_reference.fa ${fa_prefix}.sai ${reads} > ${fa_prefix}.sam
+            samtools view -bS ${fa_prefix}.sam > ${fa_prefix}.unsorted.bam
+            samtools flagstat ${fa_prefix}.unsorted.bam
+            samtools sort -@ ${large_core} -o ${fa_prefix}.bam ${fa_prefix}.unsorted.bam
+            samtools index -b ${fa_prefix}.bam
+            """
+        else if (sample_id == "N2" && phosphate_id == "")
+            """
+            bwa aln -o 0 -n 0 -t ${large_core} N2_reference.fa ${reads} > ${fa_prefix}.sai
+            bwa samse N2_reference.fa ${fa_prefix}.sai ${reads} > ${fa_prefix}.sam
+            samtools view -bS ${fa_prefix}.sam > ${fa_prefix}.unsorted.bam
+            samtools flagstat ${fa_prefix}.unsorted.bam
+            samtools sort -@ ${large_core} -o ${fa_prefix}.bam ${fa_prefix}.unsorted.bam
+            samtools index -b ${fa_prefix}.bam
+            """
+        else if (sample_id == "CB" && phosphate_id == "")
+            """
+            bwa aln -o 0 -n 0 -t ${large_core} CB_reference.fa ${reads} > ${fa_prefix}.sai
+            bwa samse CB_reference.fa ${fa_prefix}.sai ${reads} > ${fa_prefix}.sam
+            samtools view -bS ${fa_prefix}.sam > ${fa_prefix}.unsorted.bam
+            samtools flagstat ${fa_prefix}.unsorted.bam
+            samtools sort -@ ${large_core} -o ${fa_prefix}.bam ${fa_prefix}.unsorted.bam
+            samtools index -b ${fa_prefix}.bam
+            """
+        else
+            """
+            """
 }
 
-joint_bams = hisat2_bams.groupTuple()
+bwa_bams.into { P_unfiltered; N2_unfiltered; CB_unfiltered }
 
-process join_bams {
+P_unfiltered.filter{ it[1] == "P"}.into {P_filtered} //it[0] = sample_id
+N2_unfiltered.filter{ it[1] == "" && it[0] == "N2"}.into {N2_filtered}
+CB_unfiltered.filter{ it[1] == "" && it[0] == "CB"}.into {CB_filtered}
 
-    publishDir "output/bam", mode: 'copy'
 
-    cpus small_core
-
-    tag { sample_id }
+process _22Gexpression {
 
     input:
-        set val(sample_id), file(bam), file(bai) from joint_bams
+        set val(sample_id), val(phosphate_id), file(sample_bam), file(sample_bai) from P_filtered
 
-
-    output:
-        set val(sample_id), file("${sample_id}.bam"), file("${sample_id}.bam.bai") into hisat2_merged_bams
 
     """
-        samtools merge -f ${sample_id}.unsorted.bam ${bam}
-        samtools sort -@ ${small_core} -o ${sample_id}.bam ${sample_id}.unsorted.bam
-        samtools flagstat ${sample_id}.bam
-        samtools index -b ${sample_id}.bam
-
+        samtools view -h ${sample_bam} | awk '\$1 ~ /^@/ || length(\$10) == 22 && \$10 ~ /^G/' | samtools view -bS -> ${sample_bam}-22G.bam
+        samtools index -b ${sample_bam}-22G.bam
     """
+
+
 }
-
-
-process stringtie_counts {
-
-    //storeDir '/storedir/expression'
-    publishDir "output/expression", mode: 'copy'
-
-    cpus small_core
-
-    tag { sample_id }
-
-    input:
-        set val(sample_id), file(bam), file(bai) from hisat2_merged_bams
-        file("geneset.gtf.gz") from geneset_stringtie.first()
-
-    output:
-        file("${sample_id}/*") into stringtie_exp
-
-    """ 
-        gzcat geneset.gtf.gz > geneset.gtf
-        stringtie -p ${small_core} -G geneset.gtf -e -B -o ${sample_id}/${sample_id}_expressed.gtf ${bam}
-    """
-}
-
-
-prepDE = file("scripts/prepDE.py")
-
-process stringtie_table_counts {
-
-    echo true
-
-    publishDir "output/diffexp", mode: 'copy'
-
-    cpus small_core
-
-    tag { sample_id }
-
-    input:
-        val(sample_file) from stringtie_exp.toSortedList()
-
-    output:
-        file ("gene_count_matrix.csv") into gene_count_matrix
-        file ("transcript_count_matrix.csv") into transcript_count_matrix
-
-    """
-        for i in ${sample_file.flatten().join(" ")}; do
-            bn=`basename \${i}`
-            full_path=`dirname \${i}`
-            sample_name=\${full_path##*/}
-            echo "\${sample_name} \${i}"
-            mkdir -p expression/\${sample_name}
-            ln -s \${i} expression/\${sample_name}/\${bn}
-        done;
-        python ${prepDE} -i expression -l 50 -g gene_count_matrix.csv -t transcript_count_matrix.csv
-
-    """
-}
-
 
 
