@@ -1,0 +1,6 @@
+nextflow.config
+work
+.nextflow
+.nextflow.log*
+.nextflow.history
+output
