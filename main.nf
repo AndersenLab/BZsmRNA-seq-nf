@@ -85,6 +85,8 @@ process bwa_index_CB {
     """
 }
 
+adapters = file("auxillary/TruSeq3-SE.fa")
+
 process trimmomatic {
 
     cpus small_core
@@ -101,7 +103,7 @@ process trimmomatic {
     name_out = name.replace('.fastq.gz', '_trim.fq.gz')
 
     """
-        trimmomatic SE -phred33 -threads ${small_core} ${reads} ${name_out} ILLUMINACLIP:TruSeq3-SE.fa:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:15 
+        trimmomatic SE -phred33 -threads ${small_core} ${reads} ${name_out} ILLUMINACLIP:${adapters}:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:15 
     """
 }
 
@@ -263,7 +265,7 @@ process stringtie_22G_table_counts {
             mkdir -p expression/\${sample_name}
             ln -s \${i} expression/\${sample_name}/\${bn}
         done;
-        python ${prepDE} -i expression -l 50 -g gene_count_matrix.csv -t transcript_count_matrix.csv
+        python ${prepDE} -i expression -l 22 -g gene_count_matrix.csv -t transcript_count_matrix.csv
 
     """
 }
