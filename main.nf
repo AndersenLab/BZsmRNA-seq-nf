@@ -46,7 +46,7 @@ process fetch_reference {
         
     """
 }
-//geneset_gtf.into { geneset_hisat; geneset_stringtie }
+N2_geneset_gtf.into { N2_geneset_gtf_stringtie }
 
 
 process bwa_index_N2 {
@@ -117,15 +117,15 @@ process align {
         file N2_bwaindex from N2_bwaindex.first()
 
     output:
-        set val(sample_id), val(phosphate_id), file("${fa_prefix}.bam"), file("${fa_prefix}.bam.bai") into bwa_bams
+        set val(strain_id), val(phosphate_id), file("${fa_prefix}.bam"), file("${fa_prefix}.bam.bai") into bwa_bams
 
     script:
         m = reads =~ /\w+-([^_P]{2}).(P{0,1})_.*/
-        sample_id = m[0][1]
+        strain_id = m[0][1]
         phosphate_id = m[0][2]
         fa_prefix = reads[0].toString() - ~/(_trim)(\.fq\.gz)$/
 
-        println sample_id
+        println strain_id
         println phosphate_id
 
         if (phosphate_id == "P")
@@ -137,7 +137,7 @@ process align {
             samtools sort -@ ${large_core} -o ${fa_prefix}.bam ${fa_prefix}.unsorted.bam
             samtools index -b ${fa_prefix}.bam
             """
-        else if (sample_id == "N2" && phosphate_id == "")
+        else if (strain_id == "N2" && phosphate_id == "")
             """
             bwa aln -o 0 -n 0 -t ${large_core} N2_reference.fa ${reads} > ${fa_prefix}.sai
             bwa samse N2_reference.fa ${fa_prefix}.sai ${reads} > ${fa_prefix}.sam
@@ -146,7 +146,7 @@ process align {
             samtools sort -@ ${large_core} -o ${fa_prefix}.bam ${fa_prefix}.unsorted.bam
             samtools index -b ${fa_prefix}.bam
             """
-        else if (sample_id == "CB" && phosphate_id == "")
+        else if (strain_id == "CB" && phosphate_id == "")
             """
             bwa aln -o 0 -n 0 -t ${large_core} CB_reference.fa ${reads} > ${fa_prefix}.sai
             bwa samse CB_reference.fa ${fa_prefix}.sai ${reads} > ${fa_prefix}.sam
@@ -162,23 +162,109 @@ process align {
 
 bwa_bams.into { P_unfiltered; N2_unfiltered; CB_unfiltered }
 
-P_unfiltered.filter{ it[1] == "P"}.into {P_filtered} //it[0] = sample_id
+//it[0] = sample_id, it[1] = phosphate_id
+P_unfiltered.filter{ it[1] == "P"}.into {P_filtered} 
 N2_unfiltered.filter{ it[1] == "" && it[0] == "N2"}.into {N2_filtered}
 CB_unfiltered.filter{ it[1] == "" && it[0] == "CB"}.into {CB_filtered}
 
+process _22G_filter_bams {
 
-process _22Gexpression {
+    tag { sample_id }
 
     input:
-        set val(sample_id), val(phosphate_id), file(sample_bam), file(sample_bai) from P_filtered
+        set val(strain_id), val(phosphate_id), file(sample_bam), file(sample_bai) from P_filtered
 
+    output:
+        set val(sample_id), file("${fa_prefix}-22G.bam"), file("${fa_prefix}-22G.bam.bai") into _22g_bams
+
+    script:
+        fa_prefix = sample_bam[0].toString() - ~/(\.bam)$/
+        m = fa_prefix =~ /\w+-([^_]+)_.*/
+        sample_id = m[0][1]
 
     """
-        samtools view -h ${sample_bam} | awk '\$1 ~ /^@/ || length(\$10) == 22 && \$10 ~ /^G/' | samtools view -bS -> ${sample_bam}-22G.bam
-        samtools index -b ${sample_bam}-22G.bam
+        samtools view -h ${fa_prefix}.bam | awk '\$1 ~ /^@/ || length(\$10) == 22 && \$10 ~ /^G/' | samtools view -bS -> ${fa_prefix}-22G.bam
+        samtools index -b ${fa_prefix}-22G.bam
     """
-
 
 }
 
+_22g_joint_bams = _22g_bams.groupTuple()
+
+process _22G_join_bams {
+
+    publishDir "output/bam", mode: 'copy'
+
+    cpus small_core
+
+    tag { sample_id }
+
+    input:
+        set val(sample_id), file(bam), file(bai) from _22g_joint_bams
+
+    output:
+        set val(sample_id), file("${sample_id}.bam"), file("${sample_id}.bam.bai") into _22g_merged_bams
+
+    """
+        samtools merge -f ${sample_id}.unsorted.bam ${bam}
+        samtools sort -@ ${small_core} -o ${sample_id}.bam ${sample_id}.unsorted.bam
+        samtools flagstat ${sample_id}.bam
+        samtools index -b ${sample_id}.bam
+
+    """
+}
+
+process stringtie_22G_counts {
+
+    publishDir "output/22Gexpression", mode: 'copy'
+
+    cpus small_core
+
+    tag { sample_id }
+
+    input:
+        set val(sample_id), file(bam), file(bai) from _22g_merged_bams
+        file("geneset.gtf.gz") from N2_geneset_gtf_stringtie.first()
+
+    output:
+        file("${sample_id}/*") into stringtie_exp
+
+    """ 
+        gzcat geneset.gtf.gz > geneset.gtf
+        stringtie -p ${small_core} -G geneset.gtf -e -B -o ${sample_id}/${sample_id}_expressed.gtf ${bam}
+    """
+}
+
+prepDE = file("scripts/prepDE.py")
+
+process stringtie_22G_table_counts {
+
+    echo true
+
+    publishDir "output/22Gdiffexp", mode: 'copy'
+
+    cpus small_core
+
+    tag { sample_id }
+
+    input:
+        val(sample_file) from stringtie_exp.toSortedList()
+
+    output:
+        file ("gene_count_matrix.csv") into gene_count_matrix
+        file ("transcript_count_matrix.csv") into transcript_count_matrix
+
+    """
+        for i in ${sample_file.flatten().join(" ")}; do
+            bn=`basename \${i}`
+            full_path=`dirname \${i}`
+            sample_name=\${full_path##*/}
+            echo "\${sample_name} \${i}"
+            mkdir -p expression/\${sample_name}
+            ln -s \${i} expression/\${sample_name}/\${bn}
+        done;
+        python ${prepDE} -i expression -l 50 -g gene_count_matrix.csv -t transcript_count_matrix.csv
+
+    """
+}
 
