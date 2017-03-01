@@ -170,8 +170,8 @@ bwa_bams.into { P_unfiltered; N2_unfiltered; CB_unfiltered ; N2CB_unfiltered }
 //it[0] = sample_id, it[1] = phosphate_id
 P_unfiltered.filter{ it[1] == "P"}.into {P_filtered} 
 
-N2_unfiltered.filter{ it[1] == "" && it[0] == "N2"}.into {N2_filtered}
-CB_unfiltered.filter{ it[1] == "" && it[0] == "CB"}.into {CB_filtered}
+//N2_unfiltered.filter{ it[1] == "" && it[0] == "N2"}.into {N2_filtered}
+//CB_unfiltered.filter{ it[1] == "" && it[0] == "CB"}.into {CB_filtered}
 //Could combine these and split later, they are being fed to common processes
 N2CB_unfiltered.filter{ it[1] == ""}.into {N2CB_filtered}
 
@@ -390,10 +390,11 @@ process N2CB_unique_21mers {
             """
 }
 
-_21unique_joint_bams = _21unique_bams.groupTuple()
+
 
 //Merge bams containing species-unique 21mers by sample_id
 //Todo: change order later: merge first, then check for unique
+_21unique_joint_bams = _21unique_bams.groupTuple()
 process N2CB_21unique_join_bams {
 
     publishDir "output/bam_21unique", mode: 'copy'
@@ -417,39 +418,60 @@ process N2CB_21unique_join_bams {
     """
 }
 
-//For each sample, extract contigs
-process N2CB_21unique_extract_contigs {
+//For each sample, create bed file with locations of unique 21mers and their counts
+process N2CB_21unique_bed {
 
-    publishDir "output/bam_21unique", mode: 'copy'
+    publishDir "output/bed_21unique", mode: 'copy'
 
     cpus small_core
 
     tag { sample_id }
 
     input:
-        set val(sample_id), file(bam), file(bai) from _21unique_joint_bams
+        set val(sample_id), file(bam), file(bai) from _21unique_merged_bams
 
     output:
-        set val(sample_id), file("${sample_id}-unique.bam"), file("${sample_id}-unique.bam.bai") into _21unique_merged_bams
+        set val(strain_id), val(sample_id), file("${sample_id}-unique.bed") into _21unique_beds
 
+    script:
+        m = sample_id =~ /(.{2}).*/
+        strain_id = m[0][1]
+
+    //minium count per sample = 2 (change if necessary)
     """
-        samtools merge -f ${sample_id}-unique.unsorted.bam ${bam}
-        samtools sort -@ ${small_core} -o ${sample_id}-unique.bam ${sample_id}-unique.unsorted.bam
-        samtools flagstat ${sample_id}-unique.bam
-        samtools index -b ${sample_id}-unique.bam
+        bedtools bamtobed -i ${bam} > temp.bed
+        cut -f1,2,3,6 temp.bed  > temp2.bed
+        cat temp2.bed | uniq -c | awk '{print \$2 "\t" \$3 "\t" \$4 "\t" \$5 "\t" \$1 "\t" "${sample_id}"}' > temp3.bed
+        cat temp3.bed | awk '{ if (\$5 >= 2) print}' > ${sample_id}-unique.bed
 
     """
 }
 
 
+//For each strain, retain only 21mers that are present in all samples
+_21unique_joint_beds = _21unique_beds.groupTuple() //group samples by strain
 
-        bedtools bamtobed -i N2-unique.bam >N2-unique_temp1.bed 
-        cut -f1,2,3,6 N2-unique_temp2.bed  > N2-unique_temp3.bed
-        #Collaps and add count column
-        cat N2-unique_temp3.bed | uniq -c | awk '{print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $1}' > N2-unique_temp4.bed
-        #filter for >=2 reads 
-        cat N2-unique_temp4.bed | awk '{ if ($5 >= 2) print}' > N2-unique.bed
-        python N2_seqextract.py N2-unique.bed ../../N2_genome/c_elegans.PRJNA13758.WS255.genomic.fa > Seq_N2-unique.bed
+process N2CB_21unique_bed_strainmerge {
 
+    publishDir "output/bed_21unique", mode: 'copy'
+
+    cpus small_core
+
+    tag { sample_id }
+
+    input:
+        set val(strain_id), val(sample_id), file(bed) from _21unique_joint_beds
+
+    output:
+        set val(sample_id), file("${strain_id}-unique.bed") into _21unique_strain_bed
+
+    script:
+
+    """
+        cat ${bed} > temp.bed 
+        sortBed -i temp.bed > ${strain_id}-unique.bed
+
+    """
+}
 
 
