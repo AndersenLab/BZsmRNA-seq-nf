@@ -66,6 +66,7 @@ process bwa_index_N2 {
         bwa index N2_reference.fa   
     """
 }
+N2_bwaindex.into { N2_bwaindex_1; N2_bwaindex_21 }
 
 process bwa_index_CB {
 
@@ -84,6 +85,8 @@ process bwa_index_CB {
         bwa index CB_reference.fa
     """
 }
+CB_bwaindex.into { CB_bwaindex_1; CB_bwaindex_21 }
+
 
 adapters = file("auxillary/TruSeq3-SE.fa")
 
@@ -115,8 +118,8 @@ process align {
 
     input:
         file reads from trimmed_reads
-        file CB_bwaindex from CB_bwaindex.first()
-        file N2_bwaindex from N2_bwaindex.first()
+        file CB_bwaindex from CB_bwaindex_1.first()
+        file N2_bwaindex from N2_bwaindex_1.first()
 
     output:
         set val(strain_id), val(phosphate_id), file("${fa_prefix}.bam"), file("${fa_prefix}.bam.bai") into bwa_bams
@@ -162,12 +165,19 @@ process align {
             """
 }
 
-bwa_bams.into { P_unfiltered; N2_unfiltered; CB_unfiltered }
+bwa_bams.into { P_unfiltered; N2_unfiltered; CB_unfiltered ; N2CB_unfiltered }
 
 //it[0] = sample_id, it[1] = phosphate_id
 P_unfiltered.filter{ it[1] == "P"}.into {P_filtered} 
+
 N2_unfiltered.filter{ it[1] == "" && it[0] == "N2"}.into {N2_filtered}
 CB_unfiltered.filter{ it[1] == "" && it[0] == "CB"}.into {CB_filtered}
+//Could combine these and split later, they are being fed to common processes
+N2CB_unfiltered.filter{ it[1] == ""}.into {N2CB_filtered}
+
+////////////////////////
+// P-treated smRNA -> 22G (filter) -> quantify abundance (antisense to features) 
+////////////////////////
 
 process _22G_filter_bams {
 
@@ -216,6 +226,7 @@ process _22G_join_bams {
     """
 }
 
+//Fix to check for anti-sense
 process stringtie_22G_counts {
 
     publishDir "output/22Gexpression", mode: 'copy'
@@ -269,4 +280,176 @@ process stringtie_22G_table_counts {
 
     """
 }
+
+
+
+
+////////////////////////
+// Find N2 and CB unique 21-mers (non-phosphatase-treated samples)
+////////////////////////
+
+// Filter aligned bams (N2->N2, CB->CB) to aligned 21-mers 
+process N2CB_filter_bams {
+
+    tag { sample_bam }
+
+    input:
+        set val(strain_id), val(phosphate_id), file(sample_bam), file(sample_bai) from N2CB_filtered
+
+
+    output:
+        set val(strain_id), val(sample_id), val(fa_prefix), file("${fa_prefix}-21.bam"), file("${fa_prefix}-21.bam.bai") into _21_bams
+
+    script:
+        fa_prefix = sample_bam[0].toString() - ~/(\.bam)$/
+        m = fa_prefix =~ /\w+-([^_]+)_.*/
+        sample_id = m[0][1]
+
+    """
+        samtools view -h ${fa_prefix}.bam | awk '\$1 ~ /^@/ || length(\$10) == 21' | samtools view -bS -> ${fa_prefix}-21.bam
+        samtools index -b ${fa_prefix}-21.bam
+    """
+
+}
+
+// Extract aligned 21-mers as fastq
+process N2CB_extract_21mers {
+
+    tag { bam }
+
+    input:
+        set val(strain_id), val(sample_id), val(fa_prefix), file(bam), file(bai) from _21_bams
+
+    output:
+        set val(strain_id), val(sample_id), val(fa_prefix), file("${fa_prefix}-21.fq") into _21_fqs
+
+    """
+        bedtools bamtofastq -i ${bam} -fq ${fa_prefix}-21.fq
+    """
+}
+
+// Align 21-mers to opposite strain (N2->CB, CB->N2), retain those that do not align -> bams containing strain-unique 21mers
+process N2CB_unique_21mers {
+
+    cpus large_core
+
+    tag { reads }
+
+    input:
+        set val(strain_id), val(sample_id), val(fa_prefix), file(reads) from _21_fqs
+        file CB_bwaindex from CB_bwaindex_21.first()
+        file N2_bwaindex from N2_bwaindex_21.first()
+        
+    output:
+        set val(sample_id), file("${fa_prefix}-unique.bam"), file("${fa_prefix}-unique.bam.bai") into _21unique_bams
+
+    script:
+
+        if (strain_id == "N2")
+            """
+            bwa aln -o 0 -n 0 -t ${large_core} CB_reference.fa ${reads} > ${fa_prefix}-opp.sai
+            bwa samse CB_reference.fa ${fa_prefix}-opp.sai ${reads} > ${fa_prefix}-opp.sam
+            samtools view -bS ${fa_prefix}-opp.sam > ${fa_prefix}-opp.unsorted.bam
+            samtools flagstat ${fa_prefix}-opp.unsorted.bam
+            samtools sort -@ ${large_core} -o ${fa_prefix}-opp.bam ${fa_prefix}-opp.unsorted.bam
+            samtools index -b ${fa_prefix}-opp.bam
+
+            samtools view -b -f 4 ${fa_prefix}-opp.bam > ${fa_prefix}-opp.unmapped.bam
+            bedtools bamtofastq -i ${fa_prefix}-opp.unmapped.bam -fq ${fa_prefix}-opp.unmapped.fq
+
+            bwa aln -o 0 -n 0 -t ${large_core} N2_reference.fa ${fa_prefix}-opp.unmapped.fq > ${fa_prefix}-unique.sai
+            bwa samse N2_reference.fa ${fa_prefix}-unique.sai ${fa_prefix}-opp.unmapped.fq > ${fa_prefix}-unique.sam
+            samtools view -bS ${fa_prefix}-unique.sam > ${fa_prefix}-unique.unsorted.bam
+            samtools flagstat ${fa_prefix}-unique.unsorted.bam
+            samtools sort -@ ${large_core} -o ${fa_prefix}-unique.bam ${fa_prefix}-unique.unsorted.bam
+            samtools index -b ${fa_prefix}-unique.bam
+
+            """
+        else if (strain_id == "CB")
+            """
+            bwa aln -o 0 -n 0 -t ${large_core} N2_reference.fa ${reads} > ${fa_prefix}-opp.sai
+            bwa samse N2_reference.fa ${fa_prefix}-opp.sai ${reads} > ${fa_prefix}-opp.sam
+            samtools view -bS ${fa_prefix}-opp.sam > ${fa_prefix}-opp.unsorted.bam
+            samtools flagstat ${fa_prefix}-opp.unsorted.bam
+            samtools sort -@ ${large_core} -o ${fa_prefix}-opp.bam ${fa_prefix}-opp.unsorted.bam
+            samtools index -b ${fa_prefix}-opp.bam
+
+            samtools view -b -f 4 ${fa_prefix}-opp.bam > ${fa_prefix}-opp.unmapped.bam
+            bedtools bamtofastq -i ${fa_prefix}-opp.unmapped.bam -fq ${fa_prefix}-opp.unmapped.fq
+
+            bwa aln -o 0 -n 0 -t ${large_core} CB_reference.fa ${fa_prefix}-opp.unmapped.fq > ${fa_prefix}-unique.sai
+            bwa samse CB_reference.fa ${fa_prefix}-unique.sai ${fa_prefix}-opp.unmapped.fq > ${fa_prefix}-unique.sam
+            samtools view -bS ${fa_prefix}-unique.sam > ${fa_prefix}-unique.unsorted.bam
+            samtools flagstat ${fa_prefix}-unique.unsorted.bam
+            samtools sort -@ ${large_core} -o ${fa_prefix}-unique.bam ${fa_prefix}-unique.unsorted.bam
+            samtools index -b ${fa_prefix}-unique.bam
+            
+            """
+        else
+            """
+            """
+}
+
+_21unique_joint_bams = _21unique_bams.groupTuple()
+
+//Merge bams containing species-unique 21mers by sample_id
+//Todo: change order later: merge first, then check for unique
+process N2CB_21unique_join_bams {
+
+    publishDir "output/bam_21unique", mode: 'copy'
+
+    cpus small_core
+
+    tag { sample_id }
+
+    input:
+        set val(sample_id), file(bam), file(bai) from _21unique_joint_bams
+
+    output:
+        set val(sample_id), file("${sample_id}-unique.bam"), file("${sample_id}-unique.bam.bai") into _21unique_merged_bams
+
+    """
+        samtools merge -f ${sample_id}-unique.unsorted.bam ${bam}
+        samtools sort -@ ${small_core} -o ${sample_id}-unique.bam ${sample_id}-unique.unsorted.bam
+        samtools flagstat ${sample_id}-unique.bam
+        samtools index -b ${sample_id}-unique.bam
+
+    """
+}
+
+//For each sample, extract contigs
+process N2CB_21unique_extract_contigs {
+
+    publishDir "output/bam_21unique", mode: 'copy'
+
+    cpus small_core
+
+    tag { sample_id }
+
+    input:
+        set val(sample_id), file(bam), file(bai) from _21unique_joint_bams
+
+    output:
+        set val(sample_id), file("${sample_id}-unique.bam"), file("${sample_id}-unique.bam.bai") into _21unique_merged_bams
+
+    """
+        samtools merge -f ${sample_id}-unique.unsorted.bam ${bam}
+        samtools sort -@ ${small_core} -o ${sample_id}-unique.bam ${sample_id}-unique.unsorted.bam
+        samtools flagstat ${sample_id}-unique.bam
+        samtools index -b ${sample_id}-unique.bam
+
+    """
+}
+
+
+
+        bedtools bamtobed -i N2-unique.bam >N2-unique_temp1.bed 
+        cut -f1,2,3,6 N2-unique_temp2.bed  > N2-unique_temp3.bed
+        #Collaps and add count column
+        cat N2-unique_temp3.bed | uniq -c | awk '{print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $1}' > N2-unique_temp4.bed
+        #filter for >=2 reads 
+        cat N2-unique_temp4.bed | awk '{ if ($5 >= 2) print}' > N2-unique.bed
+        python N2_seqextract.py N2-unique.bed ../../N2_genome/c_elegans.PRJNA13758.WS255.genomic.fa > Seq_N2-unique.bed
+
+
 
