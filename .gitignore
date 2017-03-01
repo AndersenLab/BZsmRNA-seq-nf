@@ -4,3 +4,7 @@ work
 .nextflow.log*
 .nextflow.history
 output
+trace*
+dag*
+timeline*
+old_pipeline
