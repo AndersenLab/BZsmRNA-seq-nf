@@ -69,6 +69,7 @@ process bwa_index_N2 {
 }
 N2_bwaindex.into { N2_bwaindex_1; N2_bwaindex_21 }
 
+//CB genome headers require clipping of extraneous chromosome length information
 process bwa_index_CB {
 
     cpus small_core
@@ -82,7 +83,7 @@ process bwa_index_CB {
        file "CB_reference.*" into CB_bwaindex
 
     """ 
-        gzcat CB_reference.fa.gz > CB_reference.fa
+        gzcat CB_reference.fa.gz | awk '{print \$1; }' > CB_reference.fa
         bwa index CB_reference.fa
     """
 }
@@ -476,12 +477,16 @@ process N2CB_21unique_bed_strainmerge {
 
     """
 }
+_21unique_shared.into { N2_21unique_shared_unfiltered ; CB_21unique_shared_unfiltered }
+
+//it[0] = sample_id, it[1] = phosphate_id
+N2_21unique_shared_unfiltered.filter{ it[0] == "N2"}.into {N2_21unique_shared} 
+CB_21unique_shared_unfiltered.filter{ it[0] == "CB"}.into {CB_21unique_shared} 
 
 
 //For each strain, extract sequences of replicate-shared 21mers 
 N2seqextract = file("scripts/N2_seqextract.py")
-CBseqextract = file("scripts/CB_seqextract.py")
-process N2CB_21unique_seqextract {
+process N2_21unique_seqextract {
 
     publishDir "output/seq_21unique", mode: 'copy'
 
@@ -490,33 +495,42 @@ process N2CB_21unique_seqextract {
     tag { strain_id }
 
     input:
-        set val(strain_id), file (bed) from _21unique_shared
-        file("CB_reference.fa.gz") from CB_reference_seqextract
+        set val(strain_id), file (bed) from N2_21unique_shared
         file("N2_reference.fa.gz") from N2_reference_seqextract
 
     output:
-        set val(strain_id), file ("${strain_id}_unique.fa") into _21unique_fastas
+        set val(strain_id), file ("${strain_id}_unique.fa") into N2_21unique_fasta
 
-    script:
 
-        if (strain_id == "N2")
-            """
-            gzcat N2_reference.fa.gz > N2_reference.fa
-            python ${N2seqextract} ${bed} N2_reference.fa > ${strain_id}_unique.fa
+    """
+        gzcat N2_reference.fa.gz > N2_reference.fa
+        python ${N2seqextract} ${bed} N2_reference.fa > ${strain_id}_unique.fa
 
-            """
-        else if (strain_id == "CB")
-            """
-            gzcat CB_reference.fa.gz > CB_reference.fa
-            python ${CBseqextract} ${bed} CB_reference.fa > ${strain_id}_unique.fa
-
-            """
-        else
-            """
-            """
+    """
 }
 
-            //gzcat CB_reference.fa.gz > CB_reference.fa
-            //python ${CBseqextract} ${bed} CB_reference.fa > ${strain_id}_unique.temp.fa
-            //cat ${strain_id}_unique.temp.fa | awk '{print ">" $1 ":" $2 "_" $3 "_" $4 "\n" $6}' > ${strain_id}_unique.fa
+CBseqextract = file("scripts/CB_seqextract.py")
+process CB_21unique_seqextract {
+
+    publishDir "output/seq_21unique", mode: 'copy'
+
+    cpus small_core
+
+    tag { strain_id }
+
+    input:
+        set val(strain_id), file (bed) from CB_21unique_shared
+        file("CB_reference.fa.gz") from CB_reference_seqextract
+
+    output:
+        set val(strain_id), file ("${strain_id}_unique.fa") into CB_21unique_fasta
+
+
+    """
+        gzcat CB_reference.fa.gz | awk '{print \$1; }' > CB_reference.fa
+        python ${CBseqextract} ${bed} CB_reference.fa > ${strain_id}_unique.fa
+
+    """
+}
+
 

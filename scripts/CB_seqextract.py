@@ -51,9 +51,6 @@ def fastaparse(file):
 	return (SeqIDs,Seqs)
 ce_SeqIDs, ce_Seqs = fastaparse(g)
 
-
-sed "s/draw($prev_number;n_)/draw($number;n_)/g" file.txt > tmp
-
 def coordparse(filename):
 	fstring = ''
 	for line in filename:
@@ -74,7 +71,7 @@ def coordparse(filename):
 			RNA_seq = seq[c1:c2]
 			#RNA_seq_us = seq[c1-51:c2] #60bp upstream + RNA_seq
 			#RNA_seq_us = seq[c1-61:c1-1] #60bp upstream
-			out_line = ">Chr: {chrom} {c1} {c2} +\n{RNA_seq}\n".format(**locals())
+			out_line = ">Chr:{chrom}_{c1}_{c2}_+\n{RNA_seq}\n".format(**locals())
 			print out_line
 		else:
 			RNA_seq = seq[c1:c2]
@@ -82,7 +79,7 @@ def coordparse(filename):
 			#RNA_seq_us = seq[c2:c2+60] #60bp upstream
 			RNA_seqrc = ''.join(revcom(RNA_seq))
 			#RNA_seq_usrc = ''.join(revcom(piRNA_seq_us))
-			out_line = ">Chr: {chrom} {c1} {c2} -\n{RNA_seq}\n".format(**locals())
+			out_line = ">Chr:{chrom}_{c1}_{c2}_-\n{RNA_seq}\n".format(**locals())
 			print out_line
 		
 run = coordparse(p)
