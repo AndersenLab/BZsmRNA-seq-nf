@@ -63,7 +63,7 @@ process bwa_index_N2 {
        file "N2_reference.*" into N2_bwaindex
 
     """
-        gzcat N2_reference.fa.gz > N2_reference.fa
+        zcat N2_reference.fa.gz > N2_reference.fa
         bwa index N2_reference.fa   
     """
 }
@@ -83,7 +83,7 @@ process bwa_index_CB {
        file "CB_reference.*" into CB_bwaindex
 
     """ 
-        gzcat CB_reference.fa.gz | awk '{print \$1; }' > CB_reference.fa
+        zcat CB_reference.fa.gz | awk '{print \$1; }' > CB_reference.fa
         bwa index CB_reference.fa
     """
 }
@@ -245,7 +245,7 @@ process stringtie_22G_counts {
         file("${sample_id}/*") into stringtie_exp
 
     """ 
-        gzcat geneset.gtf.gz > geneset.gtf
+        zcat geneset.gtf.gz > geneset.gtf
         stringtie -p ${small_core} -G geneset.gtf -e -B -o ${sample_id}/${sample_id}_expressed.gtf ${bam}
     """
 }
@@ -503,7 +503,7 @@ process N2_21unique_seqextract {
 
 
     """
-        gzcat N2_reference.fa.gz > N2_reference.fa
+        zcat N2_reference.fa.gz > N2_reference.fa
         python ${N2seqextract} ${bed} N2_reference.fa > ${strain_id}_unique.fa
 
     """
@@ -527,7 +527,7 @@ process CB_21unique_seqextract {
 
 
     """
-        gzcat CB_reference.fa.gz | awk '{print \$1; }' > CB_reference.fa
+        zcat CB_reference.fa.gz | awk '{print \$1; }' > CB_reference.fa
         python ${CBseqextract} ${bed} CB_reference.fa > ${strain_id}_unique.fa
 
     """
@@ -547,7 +547,7 @@ process blast_formatdb {
        file "N2*" into N2_blastindex
 
     """
-        gzcat N2_reference.fa.gz > N2_reference.fa
+        zcat N2_reference.fa.gz > N2_reference.fa
         makeblastdb -in N2_reference.fa -dbtype nucl -out N2ref
     """
 }
