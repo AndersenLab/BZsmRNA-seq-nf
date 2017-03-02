@@ -47,7 +47,8 @@ process fetch_reference {
     """
 }
 N2_geneset_gtf.into { N2_geneset_gtf_stringtie }
-
+N2_reference.into { N2_reference_BWA; N2_reference_seqextract; N2_reference_blast }
+CB_reference.into { CB_reference_BWA; CB_reference_seqextract; CB_reference_blast }
 
 process bwa_index_N2 {
 
@@ -56,7 +57,7 @@ process bwa_index_N2 {
     tag { name }
 
     input:
-        file("N2_reference.fa.gz") from N2_reference
+        file("N2_reference.fa.gz") from N2_reference_BWA
 
     output:
        file "N2_reference.*" into N2_bwaindex
@@ -75,7 +76,7 @@ process bwa_index_CB {
     tag { name }
 
     input:
-        file("CB_reference.fa.gz") from CB_reference
+        file("CB_reference.fa.gz") from CB_reference_BWA
 
     output:
        file "CB_reference.*" into CB_bwaindex
@@ -421,7 +422,7 @@ process N2CB_21unique_join_bams {
 //For each sample, create bed file with locations of unique 21mers and their counts
 process N2CB_21unique_bed {
 
-    publishDir "output/bed_21unique", mode: 'copy'
+    //publishDir "output/bed_21unique", mode: 'copy'
 
     cpus small_core
 
@@ -448,8 +449,8 @@ process N2CB_21unique_bed {
 }
 
 
-//For each strain, retain only 21mers that are present in all samples
-_21unique_joint_beds = _21unique_beds.groupTuple() //group samples by strain
+//For each strain, retain only strain-specific 21mers that are present in all replicate samples
+_21unique_joint_beds = _21unique_beds.groupTuple() //group replicate samples by strain
 
 process N2CB_21unique_bed_strainmerge {
 
@@ -463,15 +464,59 @@ process N2CB_21unique_bed_strainmerge {
         set val(strain_id), val(sample_id), file(bed) from _21unique_joint_beds
 
     output:
-        set val(sample_id), file("${strain_id}-unique.bed") into _21unique_strain_bed
+        file("${strain_id}-unique.bed") into dead_end
+        set val(strain_id), file ("${strain_id}-shared_unique.bed") into _21unique_shared
 
     script:
 
     """
         cat ${bed} > temp.bed 
         sortBed -i temp.bed > ${strain_id}-unique.bed
+        cat ${strain_id}-unique.bed | awk '{print \$1 "\t" \$2 "\t" \$3 "\t" \$4}' | uniq -c | awk '{ if (\$1 == 4) print \$2 "\t" \$3 "\t" \$4 "\t" \$5 }' > ${strain_id}-shared_unique.bed
 
     """
 }
 
+
+//For each strain, extract sequences of replicate-shared 21mers 
+N2seqextract = file("scripts/N2_seqextract.py")
+CBseqextract = file("scripts/CB_seqextract.py")
+process N2CB_21unique_seqextract {
+
+    publishDir "output/seq_21unique", mode: 'copy'
+
+    cpus small_core
+
+    tag { strain_id }
+
+    input:
+        set val(strain_id), file (bed) from _21unique_shared
+        file("CB_reference.fa.gz") from CB_reference_seqextract
+        file("N2_reference.fa.gz") from N2_reference_seqextract
+
+    output:
+        set val(strain_id), file ("${strain_id}_unique.fa") into _21unique_fastas
+
+    script:
+
+        if (strain_id == "N2")
+            """
+            gzcat N2_reference.fa.gz > N2_reference.fa
+            python ${N2seqextract} ${bed} N2_reference.fa > ${strain_id}_unique.fa
+
+            """
+        else if (strain_id == "CB")
+            """
+            gzcat CB_reference.fa.gz > CB_reference.fa
+            python ${CBseqextract} ${bed} CB_reference.fa > ${strain_id}_unique.fa
+
+            """
+        else
+            """
+            """
+}
+
+            //gzcat CB_reference.fa.gz > CB_reference.fa
+            //python ${CBseqextract} ${bed} CB_reference.fa > ${strain_id}_unique.temp.fa
+            //cat ${strain_id}_unique.temp.fa | awk '{print ">" $1 ":" $2 "_" $3 "_" $4 "\n" $6}' > ${strain_id}_unique.fa
 
