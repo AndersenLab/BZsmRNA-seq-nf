@@ -499,7 +499,7 @@ process N2_21unique_seqextract {
         file("N2_reference.fa.gz") from N2_reference_seqextract
 
     output:
-        set val(strain_id), file ("${strain_id}_unique.fa") into N2_21unique_fasta
+        file ("${strain_id}_unique.fa") into N2_21unique_fasta
 
 
     """
@@ -523,7 +523,7 @@ process CB_21unique_seqextract {
         file("CB_reference.fa.gz") from CB_reference_seqextract
 
     output:
-        set val(strain_id), file ("${strain_id}_unique.fa") into CB_21unique_fasta
+        file ("${strain_id}_unique.fa") into CB_21unique_fasta
 
 
     """
@@ -532,5 +532,67 @@ process CB_21unique_seqextract {
 
     """
 }
+
+
+
+//Index N2 BLAST database 
+process blast_formatdb {
+
+    cpus small_core
+
+    input:
+        file("N2_reference.fa.gz") from N2_reference_blast
+
+    output:
+       file "N2*" into N2_blastindex
+
+    """
+        gzcat N2_reference.fa.gz > N2_reference.fa
+        makeblastdb -in N2_reference.fa -dbtype nucl -out N2ref
+    """
+}
+N2_blastindex.into { N2_blastindex_1 ; N2_blastindex_2 }
+
+
+//Blast N2 unique 21mers
+process blast_N2_21 {
+
+    publishDir "output/blast", mode: 'copy'
+
+    cpus small_core
+
+    input:
+        file N2_blastindices from N2_blastindex_1.first()
+        file("N2_unique.fa") from N2_21unique_fasta
+
+    output:
+        file "N2_blast.txt" into N2_blastout
+
+    """
+        blastn -db N2ref -query N2_unique.fa -outfmt 6 -task blastn-short -qcov_hsp_perc 80 -out N2_blast.txt  
+    """
+}
+
+//Blast CB unique 21mers
+process blast_CB_21 {
+
+    publishDir "output/blast", mode: 'copy'
+
+    cpus small_core
+
+    input:
+        file N2_blastindices from N2_blastindex_2.first()
+        file("CB_unique.fa") from CB_21unique_fasta
+
+    output:
+        file "CB_blast.txt" into CB_blastout
+
+    """
+        blastn -db N2ref -query CB_unique.fa -outfmt 6 -task blastn-short -qcov_hsp_perc 80 -out CB_blast.txt   
+    """
+}
+
+
+
 
 

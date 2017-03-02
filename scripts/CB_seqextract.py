@@ -84,6 +84,7 @@ def coordparse(filename):
 		
 run = coordparse(p)
 
+
 #def coordparse(filename, outfile):
 #with open(outfile, 'w+') as f:
 #f.write
