@@ -207,7 +207,7 @@ _22g_joint_bams = _22g_bams.groupTuple()
 
 process _22G_join_bams {
 
-    publishDir "output/bam", mode: 'copy'
+    publishDir "output/22Gbam", mode: 'copy'
 
     cpus small_core
 
